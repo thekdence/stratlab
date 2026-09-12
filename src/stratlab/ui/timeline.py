@@ -9,27 +9,32 @@ from PySide6.QtWidgets import QWidget, QToolTip
 
 from stratlab.core.segment import Segment
 from stratlab.core.timing import frame_to_seconds, format_timecode
+from stratlab.ui.theme import PALETTE
 
 
 class TimelineWidget(QWidget):
-    """Custom scrubber slider displaying playhead and highlighted segment ranges."""
+    """Custom scrubber slider displaying playhead and highlighted segment ranges.
+
+    Marked attempts all share one neutral band colour; only the selected
+    attempt is drawn in the accent.  Rank is read in the attempts panel, so
+    the timeline only has to answer "where am I" and "where is this run".
+    """
 
     seek_requested = Signal(int)
 
-    # Palette for visual segment bands
-    SEGMENT_COLORS = [
-        QColor(59, 130, 246, 120),   # Blue
-        QColor(168, 85, 247, 120),   # Purple
-        QColor(236, 72, 153, 120),   # Pink
-        QColor(20, 184, 166, 120),   # Teal
-        QColor(245, 158, 11, 120),   # Amber
-        QColor(34, 197, 94, 120),    # Emerald
-    ]
+    # Unselected attempt bands recede; the selected one steps forward.
+    BAND_IDLE = QColor("#454d59")
+    BAND_IDLE_EDGE = QColor("#5d6775")
+    BAND_ACTIVE = QColor(PALETTE["accent"])
+    BAND_ACTIVE_EDGE = QColor(PALETTE["accent_hi"])
+
+    _SIDE_PAD = 10
+    _TRACK_H = 8
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.setMouseTracking(True)
-        self.setFixedHeight(28)
+        self.setFixedHeight(34)
         self.setMinimumWidth(200)
 
         self._total_frames: int = 0
@@ -57,16 +62,16 @@ class TimelineWidget(QWidget):
     def _frame_to_x(self, frame: int) -> int:
         if self._total_frames <= 1:
             return 0
-        track_w = self.width() - 16
+        track_w = self.width() - 2 * self._SIDE_PAD
         fraction = max(0.0, min(1.0, frame / (self._total_frames - 1)))
-        return 8 + int(round(fraction * track_w))
+        return self._SIDE_PAD + int(round(fraction * track_w))
 
     def _x_to_frame(self, x: int) -> int:
         if self._total_frames <= 1:
             return 0
-        track_w = max(1, self.width() - 16)
-        x_clamped = max(8, min(self.width() - 8, x))
-        fraction = (x_clamped - 8) / track_w
+        track_w = max(1, self.width() - 2 * self._SIDE_PAD)
+        x_clamped = max(self._SIDE_PAD, min(self.width() - self._SIDE_PAD, x))
+        fraction = (x_clamped - self._SIDE_PAD) / track_w
         frame = int(round(fraction * (self._total_frames - 1)))
         return max(0, min(frame, self._total_frames - 1))
 
@@ -104,59 +109,60 @@ class TimelineWidget(QWidget):
 
         w = self.width()
         h = self.height()
-        track_y = h // 2 - 3
-        track_h = 6
-        track_x = 8
-        track_w = w - 16
+        track_h = self._TRACK_H
+        track_y = (h - track_h) // 2
+        track_x = self._SIDE_PAD
+        track_w = w - 2 * self._SIDE_PAD
 
-        # Draw base track groove
-        groove_rect = QRect(track_x, track_y, track_w, track_h)
-        painter.fillRect(groove_rect, QColor("#1e2025"))
-        painter.setPen(QPen(QColor("#2d3036"), 1))
-        painter.drawRect(groove_rect)
+        # Base groove — a recess, not an outlined box.
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(QColor(PALETTE["bg_sunken"])))
+        painter.drawRoundedRect(QRect(track_x, track_y, track_w, track_h), 3, 3)
 
         if self._total_frames <= 0:
             return
 
-        # Draw segment ranges
-        for idx, seg in enumerate(self._segments):
-            if seg.in_frame is not None and seg.out_frame is not None and seg.out_frame > seg.in_frame:
-                x_in = self._frame_to_x(seg.in_frame)
-                x_out = self._frame_to_x(seg.out_frame)
-                seg_w = max(2, x_out - x_in)
+        # Attempt ranges.  Draw unselected bands first so the selected one
+        # always sits on top where ranges overlap.
+        ordered = sorted(
+            (s for s in self._segments if s.in_frame is not None and s.out_frame is not None
+             and s.out_frame > s.in_frame),
+            key=lambda s: s.id == self._selected_id,
+        )
 
-                is_selected = (seg.id == self._selected_id)
-                base_color = self.SEGMENT_COLORS[idx % len(self.SEGMENT_COLORS)]
+        for seg in ordered:
+            x_in = self._frame_to_x(seg.in_frame)
+            x_out = self._frame_to_x(seg.out_frame)
+            seg_w = max(2, x_out - x_in)
+            is_selected = (seg.id == self._selected_id)
 
-                if is_selected:
-                    fill_color = QColor(base_color.red(), base_color.green(), base_color.blue(), 190)
-                    border_color = QColor(base_color.red(), base_color.green(), base_color.blue(), 255)
-                else:
-                    fill_color = base_color
-                    border_color = QColor(base_color.red(), base_color.green(), base_color.blue(), 160)
+            fill = QColor(self.BAND_ACTIVE if is_selected else self.BAND_IDLE)
+            edge = QColor(self.BAND_ACTIVE_EDGE if is_selected else self.BAND_IDLE_EDGE)
+            if not is_selected:
+                fill.setAlpha(205)
 
-                seg_rect = QRect(x_in, track_y - 2, seg_w, track_h + 4)
-                painter.fillRect(seg_rect, fill_color)
-                painter.setPen(QPen(border_color, 1))
-                painter.drawRect(seg_rect)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QBrush(fill))
+            painter.drawRoundedRect(QRect(x_in, track_y, seg_w, track_h), 3, 3)
 
-                # Small IN and OUT markers
-                painter.fillRect(QRect(x_in - 1, track_y - 4, 2, track_h + 8), border_color)
-                painter.fillRect(QRect(x_out - 1, track_y - 4, 2, track_h + 8), border_color)
+            # IN / OUT edge ticks, taller on the selected attempt.
+            tick_over = 5 if is_selected else 2
+            painter.setBrush(QBrush(edge))
+            painter.drawRect(QRect(x_in, track_y - tick_over, 1, track_h + 2 * tick_over))
+            painter.drawRect(QRect(x_out - 1, track_y - tick_over, 1, track_h + 2 * tick_over))
 
-        # Draw playhead cursor
+        # Playhead — a single hairline plus a compact cap, so it stays legible
+        # on top of a band without becoming decoration.
         playhead_x = self._frame_to_x(self._current_frame)
-        playhead_color = QColor("#38bdf8")
-        painter.setPen(QPen(playhead_color, 2))
-        painter.drawLine(playhead_x, 2, playhead_x, h - 2)
+        playhead_color = QColor(PALETTE["accent_hi"])
 
-        # Draw playhead handle diamond
-        handle_poly = [
-            QPoint(playhead_x, 2),
-            QPoint(playhead_x + 4, 7),
-            QPoint(playhead_x, 12),
-            QPoint(playhead_x - 4, 7),
-        ]
-        painter.setBrush(QBrush(playhead_color))
+        painter.setPen(QPen(playhead_color, 1))
+        painter.drawLine(playhead_x, 4, playhead_x, h - 5)
+
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawPolygon(handle_poly)
+        painter.setBrush(QBrush(playhead_color))
+        painter.drawPolygon([
+            QPoint(playhead_x - 4, 1),
+            QPoint(playhead_x + 4, 1),
+            QPoint(playhead_x, 7),
+        ])

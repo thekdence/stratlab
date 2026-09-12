@@ -11,7 +11,6 @@ from PySide6.QtWidgets import (
     QComboBox,
     QLabel,
     QPushButton,
-    QFrame,
     QSlider,
 )
 from PySide6.QtGui import QFont, QImage
@@ -19,6 +18,14 @@ from PySide6.QtGui import QFont, QImage
 from stratlab.core.segment import Segment
 from stratlab.core.timing import frame_to_seconds, format_timecode, format_duration
 from stratlab.ui.video_player import VideoPlayer
+from stratlab.ui.theme import PALETTE
+
+
+def _restyle(widget: QWidget) -> None:
+    """Re-run the stylesheet after a dynamic property changes."""
+    style = widget.style()
+    style.unpolish(widget)
+    style.polish(widget)
 
 
 class CompareView(QWidget):
@@ -55,149 +62,161 @@ class CompareView(QWidget):
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(6)
+        layout.setContentsMargins(14, 10, 14, 10)
+        layout.setSpacing(10)
 
-        # Header bar
+        # --- Header: exit, then the verdict ---------------------------------
         header_layout = QHBoxLayout()
-        header_layout.setContentsMargins(0, 0, 0, 4)
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(16)
 
-        self.btn_exit = QPushButton("← Back to Attempts")
+        self.btn_exit = QPushButton("← Attempts")
         self.btn_exit.setToolTip("Return to single-video editor (Esc)")
+        self.btn_exit.setProperty("flat", "true")
         self.btn_exit.clicked.connect(self.exit_requested.emit)
-        header_layout.addWidget(self.btn_exit)
+        header_layout.addWidget(self.btn_exit, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        # The verdict reads as a sentence; the arithmetic sits beneath it.
+        verdict_box = QVBoxLayout()
+        verdict_box.setContentsMargins(0, 0, 0, 0)
+        verdict_box.setSpacing(1)
 
         self.delta_banner = QLabel("Select two attempts to compare")
-        self.delta_banner.setStyleSheet(
-            "font-size: 13px; font-weight: bold; color: #38bdf8; padding: 4px 12px; "
-            "background-color: #1e293b; border-radius: 4px; border: 1px solid #0369a1;"
-        )
+        self.delta_banner.setObjectName("compare-summary")
         self.delta_banner.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        header_layout.addWidget(self.delta_banner, stretch=1)
+        verdict_box.addWidget(self.delta_banner)
+
+        self.delta_detail = QLabel("")
+        self.delta_detail.setObjectName("compare-summary-sub")
+        self.delta_detail.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        verdict_box.addWidget(self.delta_detail)
+
+        header_layout.addLayout(verdict_box, stretch=1)
+
+        # Balances the exit button so the verdict stays optically centred.
+        spacer = QWidget()
+        spacer.setFixedWidth(self.btn_exit.sizeHint().width())
+        header_layout.addWidget(spacer)
 
         layout.addLayout(header_layout)
 
-        # Dual video panes layout
+        # --- Dual video panes ------------------------------------------------
         panes_layout = QHBoxLayout()
-        panes_layout.setSpacing(8)
+        panes_layout.setSpacing(14)
 
-        # Left pane
-        left_box = QWidget()
-        left_vbox = QVBoxLayout(left_box)
-        left_vbox.setContentsMargins(0, 0, 0, 0)
-        left_vbox.setSpacing(4)
-
-        left_header = QHBoxLayout()
-        left_lbl = QLabel("Left:")
-        left_lbl.setStyleSheet("font-weight: 600; color: #9ca3af;")
-        left_header.addWidget(left_lbl)
-
-        self.combo_left = QComboBox()
-        self.combo_left.currentIndexChanged.connect(self._on_left_selection_changed)
-        left_header.addWidget(self.combo_left, stretch=1)
-
-        self.left_badge = QLabel("—")
-        self.left_badge.setStyleSheet("font-weight: bold; padding: 2px 6px; border-radius: 3px;")
-        left_header.addWidget(self.left_badge)
-        left_vbox.addLayout(left_header)
-
-        self.player_left = VideoPlayer()
-        left_vbox.addWidget(self.player_left, stretch=1)
-
-        self.left_status = QLabel("Frame: 0 / 0")
-        self.left_status.setStyleSheet("color: #9ca3af; font-family: Consolas, monospace; font-size: 11px;")
-        left_vbox.addWidget(self.left_status)
+        left_box, self.combo_left, self.left_badge, self.player_left, self.left_status = (
+            self._build_pane(self._on_left_selection_changed)
+        )
         panes_layout.addWidget(left_box, stretch=1)
 
-        # Separator line
-        sep = QFrame()
-        sep.setFrameShape(QFrame.Shape.VLine)
-        sep.setStyleSheet("color: #2d3036;")
-        panes_layout.addWidget(sep)
-
-        # Right pane
-        right_box = QWidget()
-        right_vbox = QVBoxLayout(right_box)
-        right_vbox.setContentsMargins(0, 0, 0, 0)
-        right_vbox.setSpacing(4)
-
-        right_header = QHBoxLayout()
-        right_lbl = QLabel("Right:")
-        right_lbl.setStyleSheet("font-weight: 600; color: #9ca3af;")
-        right_header.addWidget(right_lbl)
-
-        self.combo_right = QComboBox()
-        self.combo_right.currentIndexChanged.connect(self._on_right_selection_changed)
-        right_header.addWidget(self.combo_right, stretch=1)
-
-        self.right_badge = QLabel("—")
-        self.right_badge.setStyleSheet("font-weight: bold; padding: 2px 6px; border-radius: 3px;")
-        right_header.addWidget(self.right_badge)
-        right_vbox.addLayout(right_header)
-
-        self.player_right = VideoPlayer()
-        right_vbox.addWidget(self.player_right, stretch=1)
-
-        self.right_status = QLabel("Frame: 0 / 0")
-        self.right_status.setStyleSheet("color: #9ca3af; font-family: Consolas, monospace; font-size: 11px;")
-        right_vbox.addWidget(self.right_status)
+        right_box, self.combo_right, self.right_badge, self.player_right, self.right_status = (
+            self._build_pane(self._on_right_selection_changed)
+        )
         panes_layout.addWidget(right_box, stretch=1)
 
         layout.addLayout(panes_layout, stretch=1)
 
-        # Scrubber slider
+        # --- Shared scrubber -------------------------------------------------
         self.slider = QSlider(Qt.Orientation.Horizontal)
         self.slider.setRange(0, 0)
         self.slider.sliderMoved.connect(self.seek_relative)
         layout.addWidget(self.slider)
 
-        # Shared transport controls
+        # --- Shared transport ------------------------------------------------
         transport_layout = QHBoxLayout()
-        transport_layout.setContentsMargins(4, 2, 4, 4)
-        transport_layout.setSpacing(6)
+        transport_layout.setContentsMargins(0, 0, 0, 0)
+        transport_layout.setSpacing(3)
 
-        self.btn_restart = QPushButton("⏮ Restart")
+        self.btn_restart = QPushButton("Restart")
         self.btn_restart.setToolTip("Restart both segments from relative frame 0")
+        self.btn_restart.setProperty("flat", "true")
         self.btn_restart.clicked.connect(self.restart)
         transport_layout.addWidget(self.btn_restart)
 
-        self.btn_prev10 = QPushButton("« -10")
+        transport_layout.addSpacing(18)
+
+        self.btn_prev10 = QPushButton("−10")
         self.btn_prev10.setToolTip("Step -10 relative frames")
         self.btn_prev10.clicked.connect(lambda: self.step_relative(-10))
         transport_layout.addWidget(self.btn_prev10)
 
-        self.btn_prev1 = QPushButton("‹ -1")
+        self.btn_prev1 = QPushButton("−1")
         self.btn_prev1.setToolTip("Step -1 relative frame")
         self.btn_prev1.clicked.connect(lambda: self.step_relative(-1))
         transport_layout.addWidget(self.btn_prev1)
 
-        self.btn_play = QPushButton("▶ Play")
+        self.btn_play = QPushButton("Play")
         self.btn_play.setObjectName("btn-play")
         self.btn_play.setToolTip("Play / Pause synchronized comparison (Space)")
         self.btn_play.clicked.connect(self.request_toggle_playback)
         transport_layout.addWidget(self.btn_play)
 
-        self.btn_next1 = QPushButton("+1 ›")
+        self.btn_next1 = QPushButton("+1")
         self.btn_next1.setToolTip("Step +1 relative frame")
         self.btn_next1.clicked.connect(lambda: self.step_relative(1))
         transport_layout.addWidget(self.btn_next1)
 
-        self.btn_next10 = QPushButton("+10 »")
+        self.btn_next10 = QPushButton("+10")
         self.btn_next10.setToolTip("Step +10 relative frames")
         self.btn_next10.clicked.connect(lambda: self.step_relative(10))
         transport_layout.addWidget(self.btn_next10)
 
         transport_layout.addStretch()
 
-        self.lbl_counter = QLabel("REL: 0 / 0 fr")
-        self.lbl_counter.setStyleSheet("font-family: Consolas, monospace; font-size: 13px; font-weight: bold; color: #60a5fa;")
-        transport_layout.addWidget(self.lbl_counter)
+        cap_rel = QLabel("RELATIVE")
+        cap_rel.setObjectName("readout-unit")
+        transport_layout.addWidget(cap_rel, 0, Qt.AlignmentFlag.AlignVCenter)
+        transport_layout.addSpacing(5)
+
+        self.lbl_counter = QLabel("0 / 0")
+        self.lbl_counter.setObjectName("readout-primary")
+        transport_layout.addWidget(self.lbl_counter, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        transport_layout.addSpacing(20)
 
         self.lbl_timecode = QLabel("00:00.000 / 00:00.000")
-        self.lbl_timecode.setStyleSheet("font-family: Consolas, monospace; font-size: 13px; font-weight: bold; color: #60a5fa;")
-        transport_layout.addWidget(self.lbl_timecode)
+        self.lbl_timecode.setObjectName("readout-secondary")
+        transport_layout.addWidget(self.lbl_timecode, 0, Qt.AlignmentFlag.AlignVCenter)
 
         layout.addLayout(transport_layout)
+
+    def _build_pane(self, on_selection_changed):
+        """Build one comparison pane: identity row, viewer, relative counter."""
+        box = QWidget()
+        vbox = QVBoxLayout(box)
+        vbox.setContentsMargins(0, 0, 0, 0)
+        vbox.setSpacing(6)
+
+        header = QHBoxLayout()
+        header.setSpacing(8)
+
+        # The selector sizes to the attempt it names rather than stretching
+        # across the pane, so the pair reads as a caption above the video.
+        combo = QComboBox()
+        combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        combo.currentIndexChanged.connect(on_selection_changed)
+        header.addWidget(combo, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        badge = QLabel("—")
+        badge.setObjectName("state-chip")
+        header.addWidget(badge, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        header.addStretch()
+        vbox.addLayout(header)
+
+        player = VideoPlayer()
+        vbox.addWidget(player, stretch=1)
+
+        status = QLabel("Frame: 0 / 0")
+        status.setObjectName("pane-status")
+        vbox.addWidget(status)
+
+        return box, combo, badge, player, status
+
+    def _set_badge(self, badge: QLabel, text: str, tone: str) -> None:
+        badge.setText(text)
+        badge.setProperty("tone", tone)
+        _restyle(badge)
 
     def set_comparison_session(
         self,
@@ -281,30 +300,27 @@ class CompareView(QWidget):
             diff_sec = right_sec - left_sec
             diff_fr = right_dur - left_dur
             pct = (diff_sec / left_sec) * 100.0 if left_sec > 0 else 0.0
-            self.delta_banner.setText(
-                f"{self.seg_left.name} is FASTEST: -{diff_sec:.3f}s / -{diff_fr} frames (-{pct:.2f}%) vs {self.seg_right.name}"
+            self.delta_banner.setText(f"{self.seg_left.name} is FASTEST")
+            self.delta_detail.setText(
+                f"−{diff_sec:.3f}s   −{diff_fr} frames   −{pct:.2f}%   vs {self.seg_right.name}"
             )
-            self.left_badge.setText("FASTEST")
-            self.left_badge.setStyleSheet("color: #34d399; background-color: #064e3b; border: 1px solid #059669;")
-            self.right_badge.setText(f"+{diff_sec:.3f}s")
-            self.right_badge.setStyleSheet("color: #f87171; background-color: #3b181e; border: 1px solid #7f1d1d;")
+            self._set_badge(self.left_badge, "FASTEST", "good")
+            self._set_badge(self.right_badge, f"+{diff_sec:.3f}s", "slow")
         elif right_dur < left_dur:
             diff_sec = left_sec - right_sec
             diff_fr = left_dur - right_dur
             pct = (diff_sec / right_sec) * 100.0 if right_sec > 0 else 0.0
-            self.delta_banner.setText(
-                f"{self.seg_right.name} is FASTEST: -{diff_sec:.3f}s / -{diff_fr} frames (-{pct:.2f}%) vs {self.seg_left.name}"
+            self.delta_banner.setText(f"{self.seg_right.name} is FASTEST")
+            self.delta_detail.setText(
+                f"−{diff_sec:.3f}s   −{diff_fr} frames   −{pct:.2f}%   vs {self.seg_left.name}"
             )
-            self.right_badge.setText("FASTEST")
-            self.right_badge.setStyleSheet("color: #34d399; background-color: #064e3b; border: 1px solid #059669;")
-            self.left_badge.setText(f"+{diff_sec:.3f}s")
-            self.left_badge.setStyleSheet("color: #f87171; background-color: #3b181e; border: 1px solid #7f1d1d;")
+            self._set_badge(self.right_badge, "FASTEST", "good")
+            self._set_badge(self.left_badge, f"+{diff_sec:.3f}s", "slow")
         else:
-            self.delta_banner.setText(f"TIED: Both attempts took {left_sec:.3f}s ({left_dur} frames)")
-            self.left_badge.setText("TIED")
-            self.left_badge.setStyleSheet("color: #38bdf8; background-color: #1e293b;")
-            self.right_badge.setText("TIED")
-            self.right_badge.setStyleSheet("color: #38bdf8; background-color: #1e293b;")
+            self.delta_banner.setText("Tied")
+            self.delta_detail.setText(f"Both attempts took {left_sec:.3f}s   {left_dur} frames")
+            self._set_badge(self.left_badge, "TIED", "tied")
+            self._set_badge(self.right_badge, "TIED", "tied")
 
         # Request setup in worker
         self.setup_requested.emit(self.video_path, self.seg_left, self.seg_right, self.fps)
@@ -415,35 +431,30 @@ class CompareView(QWidget):
 
         # Update per-pane status lines
         if self.seg_left:
-            cur_l = min(rel_frame, self.seg_left.duration_frames)
-            tot_l = self.seg_left.duration_frames
-            cur_l_sec = frame_to_seconds(cur_l, self.fps)
-            freeze_txt = " [FINISHED / FROZEN]" if left_frozen else ""
-            self.left_status.setText(f"Rel: {cur_l} / {tot_l} fr ({format_timecode(cur_l_sec)}){freeze_txt}")
-            if left_frozen:
-                self.left_status.setStyleSheet("color: #34d399; font-family: Consolas, monospace; font-size: 11px; font-weight: bold;")
-            else:
-                self.left_status.setStyleSheet("color: #9ca3af; font-family: Consolas, monospace; font-size: 11px;")
+            self._update_pane_status(self.left_status, self.seg_left, rel_frame, left_frozen)
 
         if self.seg_right:
-            cur_r = min(rel_frame, self.seg_right.duration_frames)
-            tot_r = self.seg_right.duration_frames
-            cur_r_sec = frame_to_seconds(cur_r, self.fps)
-            freeze_txt = " [FINISHED / FROZEN]" if right_frozen else ""
-            self.right_status.setText(f"Rel: {cur_r} / {tot_r} fr ({format_timecode(cur_r_sec)}){freeze_txt}")
-            if right_frozen:
-                self.right_status.setStyleSheet("color: #34d399; font-family: Consolas, monospace; font-size: 11px; font-weight: bold;")
-            else:
-                self.right_status.setStyleSheet("color: #9ca3af; font-family: Consolas, monospace; font-size: 11px;")
+            self._update_pane_status(self.right_status, self.seg_right, rel_frame, right_frozen)
 
         # Coalescing check: dispatch newest target if changed while in flight.
         if self._desired_rel_frame != self._displayed_rel_frame:
             self._dispatch_seek_if_idle()
 
+    def _update_pane_status(
+        self, label: QLabel, seg: Segment, rel_frame: int, frozen: bool
+    ) -> None:
+        cur = min(rel_frame, seg.duration_frames)
+        total = seg.duration_frames
+        cur_sec = frame_to_seconds(cur, self.fps)
+        freeze_txt = "   FINISHED / FROZEN" if frozen else ""
+        label.setText(f"{cur} / {total} fr   {format_timecode(cur_sec)}{freeze_txt}")
+        label.setProperty("frozen", "true" if frozen else "false")
+        _restyle(label)
+
     def _update_counter_labels(self, rel_frame: int) -> None:
         cur_sec = frame_to_seconds(rel_frame, self.fps)
         tot_sec = frame_to_seconds(self.max_rel_frame, self.fps)
-        self.lbl_counter.setText(f"REL: {rel_frame} / {self.max_rel_frame} fr")
+        self.lbl_counter.setText(f"{rel_frame} / {self.max_rel_frame}")
         self.lbl_timecode.setText(f"{format_timecode(cur_sec)} / {format_timecode(tot_sec)}")
 
     @Slot(bool)
@@ -463,9 +474,6 @@ class CompareView(QWidget):
             self._set_play_button(False)
 
     def _set_play_button(self, is_playing: bool) -> None:
-        if is_playing:
-            self.btn_play.setText("⏸ Pause")
-            self.btn_play.setStyleSheet("background-color: #854d0e; border-color: #ca8a04; color: #fef08a;")
-        else:
-            self.btn_play.setText("▶ Play")
-            self.btn_play.setStyleSheet("")
+        self.btn_play.setText("Pause" if is_playing else "Play")
+        self.btn_play.setProperty("playing", "true" if is_playing else "false")
+        _restyle(self.btn_play)

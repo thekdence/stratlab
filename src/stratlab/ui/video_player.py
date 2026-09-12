@@ -7,6 +7,8 @@ from PySide6.QtCore import Qt, Signal, QRect, QPoint
 from PySide6.QtGui import QPainter, QPaintEvent, QImage, QColor, QFont, QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import QWidget
 
+from stratlab.ui.theme import PALETTE
+
 
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".mov", ".avi", ".webm", ".flv", ".m4v", ".ts"}
 
@@ -22,7 +24,7 @@ class VideoPlayer(QWidget):
         self.setAcceptDrops(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setMinimumSize(320, 180)
-        self.setStyleSheet("background-color: #0c0d0e;")
+        self.setStyleSheet(f"background-color: {PALETTE['bg_video']};")
 
         self._image: Optional[QImage] = None
         self._filename: Optional[str] = None
@@ -51,7 +53,7 @@ class VideoPlayer(QWidget):
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
 
         # Clear background with deep matte black
-        painter.fillRect(self.rect(), QColor("#0c0d0e"))
+        painter.fillRect(self.rect(), QColor(PALETTE["bg_video"]))
 
         if self._image is not None and not self._image.isNull():
             img_w = self._image.width()
@@ -79,26 +81,23 @@ class VideoPlayer(QWidget):
             dest_rect = QRect(dest_x, dest_y, dest_w, dest_h)
             painter.drawImage(dest_rect, self._image)
         else:
-            # Draw placeholder guide
-            painter.setPen(QColor("#4b5563"))
-            font = QFont("Segoe UI", 12, QFont.Weight.Medium)
+            # Empty state: a quiet invitation, not a poster.
+            painter.setPen(QColor(PALETTE["text_lo"]))
+            font = QFont("Segoe UI", 11, QFont.Weight.Normal)
             painter.setFont(font)
-
-            text_main = "No video loaded"
-            text_sub = "Drag and drop a video file here, or press Ctrl+O"
-
             painter.drawText(
-                self.rect().adjusted(0, -20, 0, -20),
+                self.rect().adjusted(0, -14, 0, -14),
                 Qt.AlignmentFlag.AlignCenter,
-                text_main,
+                "No video loaded",
             )
-            font_sub = QFont("Segoe UI", 10)
+
+            font_sub = QFont("Segoe UI", 9)
             painter.setFont(font_sub)
-            painter.setPen(QColor("#374151"))
+            painter.setPen(QColor(PALETTE["text_faint"]))
             painter.drawText(
-                self.rect().adjusted(0, 25, 0, 25),
+                self.rect().adjusted(0, 14, 0, 14),
                 Qt.AlignmentFlag.AlignCenter,
-                text_sub,
+                "Drop a video here  ·  Ctrl+O",
             )
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:

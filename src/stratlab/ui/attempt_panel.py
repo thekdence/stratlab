@@ -21,6 +21,40 @@ from PySide6.QtGui import QColor, QFont
 from stratlab.core.segment import Segment
 from stratlab.core.results import AttemptResult, calculate_results
 from stratlab.core.timing import frame_to_seconds, format_timecode, format_duration
+from stratlab.ui.theme import PALETTE
+
+# Column indices.  The table's column meanings are part of the app's public
+# surface (validation scripts read them by index), so they are named here
+# rather than spelled as literals.
+COL_RANK = 0
+COL_NAME = 1
+COL_DURATION = 2
+COL_FRAMES = 3
+COL_DELTA = 4
+
+ROW_HEIGHT = 34
+
+# Fixed widths for every column except the stretching attempt name.
+COLUMN_WIDTHS = {
+    COL_RANK: 38,
+    COL_DURATION: 76,
+    COL_FRAMES: 70,
+    COL_DELTA: 84,
+}
+
+_MONO = "Cascadia Mono"
+_MONO_FALLBACK = "Consolas"
+
+
+def _mono(size: int, weight: QFont.Weight = QFont.Weight.Normal) -> QFont:
+    font = QFont(_MONO, size, weight)
+    font.setStyleHint(QFont.StyleHint.Monospace)
+    font.insertSubstitution(_MONO, _MONO_FALLBACK)
+    return font
+
+
+def _ui(size: int, weight: QFont.Weight = QFont.Weight.Normal) -> QFont:
+    return QFont("Segoe UI", size, weight)
 
 
 class AttemptPanel(QWidget):
@@ -45,50 +79,58 @@ class AttemptPanel(QWidget):
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(6, 6, 6, 6)
-        layout.setSpacing(6)
+        layout.setContentsMargins(14, 10, 10, 10)
+        layout.setSpacing(10)
 
-        # Header bar
+        # --- Header ---------------------------------------------------------
         header_layout = QHBoxLayout()
-        header_layout.setContentsMargins(2, 2, 2, 2)
-        header_layout.setSpacing(6)
+        header_layout.setContentsMargins(2, 0, 0, 0)
+        header_layout.setSpacing(8)
 
         self.lbl_title = QLabel("ATTEMPTS")
-        font_t = QFont("Segoe UI", 10, QFont.Weight.Bold)
-        self.lbl_title.setFont(font_t)
-        self.lbl_title.setStyleSheet("color: #9ca3af; letter-spacing: 0.5px;")
+        self.lbl_title.setObjectName("panel-title")
         header_layout.addWidget(self.lbl_title)
+
+        self.lbl_count = QLabel("")
+        self.lbl_count.setObjectName("panel-count")
+        header_layout.addWidget(self.lbl_count)
 
         header_layout.addStretch()
 
-        # Compare button
-        self.btn_compare = QPushButton("⚡ Compare")
+        self.btn_compare = QPushButton("Compare")
         self.btn_compare.setToolTip("Compare two attempts side-by-side with synchronized playback")
-        self.btn_compare.setStyleSheet(
-            "background-color: #1e3a8a; border-color: #2563eb; color: #93c5fd; font-weight: bold; padding: 4px 10px;"
-        )
         self.btn_compare.clicked.connect(self.compare_requested.emit)
         self.btn_compare.setEnabled(False)
         header_layout.addWidget(self.btn_compare)
 
-        # Manual Add button
-        self.btn_add = QPushButton("+ Add")
+        self.btn_add = QPushButton("+")
         self.btn_add.setToolTip("Manually add a new empty attempt")
-        self.btn_add.setStyleSheet("padding: 4px 8px;")
+        self.btn_add.setProperty("flat", "true")
+        self.btn_add.setFixedWidth(28)
         self.btn_add.clicked.connect(self.add_segment)
         header_layout.addWidget(self.btn_add)
 
         layout.addLayout(header_layout)
 
-        # 5-column Table: Rank, Name, Duration, Frames, Delta/Status
+        # --- Ranked attempts table -----------------------------------------
         self.table = QTableWidget(0, 5)
         self.table.setHorizontalHeaderLabels(["Rank", "Attempt", "Duration", "Frames", "Delta / Status"])
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        # The numeric columns are held at fixed widths so the attempt name —
+        # the only variable-length field — always keeps the leftover space
+        # instead of being elided away by a long status string.
+        header = self.table.horizontalHeader()
+        for col, width in COLUMN_WIDTHS.items():
+            header.setSectionResizeMode(col, QHeaderView.ResizeMode.Fixed)
+            self.table.setColumnWidth(col, width)
+        header.setSectionResizeMode(COL_NAME, QHeaderView.ResizeMode.Stretch)
 
+        # The rows are self-describing (#1 / name / time / FASTEST), so the
+        # header only adds spreadsheet chrome.
+        self.table.horizontalHeader().setVisible(False)
+        header.setMinimumSectionSize(26)
+        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.table.setWordWrap(False)
+        self.table.setTextElideMode(Qt.TextElideMode.ElideRight)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.verticalHeader().setVisible(False)
@@ -100,46 +142,47 @@ class AttemptPanel(QWidget):
         self.table.cellDoubleClicked.connect(self._on_cell_double_clicked)
         layout.addWidget(self.table)
 
-        # Selected attempt details banner
+        # --- Selected attempt detail (subordinate) --------------------------
         self.lbl_details = QLabel("No attempt selected")
-        self.lbl_details.setStyleSheet(
-            "color: #9ca3af; font-size: 11px; background-color: #1a1c22; "
-            "padding: 3px 6px; border-radius: 3px; border: 1px solid #2d3036;"
-        )
+        self.lbl_details.setObjectName("detail-line")
+        self.lbl_details.setWordWrap(True)
         layout.addWidget(self.lbl_details)
 
-        # Bottom action bar for selected attempt
+        # --- Actions for the selected attempt -------------------------------
         action_layout = QHBoxLayout()
-        action_layout.setContentsMargins(2, 2, 2, 2)
+        action_layout.setContentsMargins(0, 0, 0, 0)
         action_layout.setSpacing(4)
 
-        self.btn_jump_in = QPushButton("Jump IN")
-        self.btn_jump_in.setToolTip("Seek video directly to attempt's IN frame")
-        self.btn_jump_in.clicked.connect(self._jump_to_in)
-        action_layout.addWidget(self.btn_jump_in)
-
-        self.btn_jump_out = QPushButton("Jump OUT")
-        self.btn_jump_out.setToolTip("Seek video directly to attempt's OUT frame")
-        self.btn_jump_out.clicked.connect(self._jump_to_out)
-        action_layout.addWidget(self.btn_jump_out)
-
-        self.btn_play_seg = QPushButton("▶ Play Run")
+        self.btn_play_seg = QPushButton("Play Run")
         self.btn_play_seg.setObjectName("btn-play")
         self.btn_play_seg.setToolTip("Play this attempt strictly from IN to OUT, then stop")
         self.btn_play_seg.clicked.connect(self._play_segment)
         action_layout.addWidget(self.btn_play_seg)
 
+        self.btn_jump_in = QPushButton("IN")
+        self.btn_jump_in.setToolTip("Seek video directly to attempt's IN frame")
+        self.btn_jump_in.setProperty("flat", "true")
+        self.btn_jump_in.clicked.connect(self._jump_to_in)
+        action_layout.addWidget(self.btn_jump_in)
+
+        self.btn_jump_out = QPushButton("OUT")
+        self.btn_jump_out.setToolTip("Seek video directly to attempt's OUT frame")
+        self.btn_jump_out.setProperty("flat", "true")
+        self.btn_jump_out.clicked.connect(self._jump_to_out)
+        action_layout.addWidget(self.btn_jump_out)
+
         action_layout.addStretch()
 
         self.btn_copy = QPushButton("Copy")
         self.btn_copy.setToolTip("Copy formatted comparison summary to clipboard")
+        self.btn_copy.setProperty("flat", "true")
         self.btn_copy.clicked.connect(self._copy_summary)
         action_layout.addWidget(self.btn_copy)
 
         self.btn_delete = QPushButton("✕")
         self.btn_delete.setObjectName("btn-delete")
         self.btn_delete.setToolTip("Delete selected attempt")
-        self.btn_delete.setFixedWidth(26)
+        self.btn_delete.setFixedWidth(30)
         self.btn_delete.clicked.connect(self.delete_selected_segment)
         action_layout.addWidget(self.btn_delete)
 
@@ -255,8 +298,7 @@ class AttemptPanel(QWidget):
 
         # Enable compare button when >= 2 valid attempts exist
         self.btn_compare.setEnabled(len(valid_segments) >= 2)
-        count_str = f"({len(self._segments)})" if self._segments else ""
-        self.lbl_title.setText(f"ATTEMPTS {count_str}")
+        self.lbl_count.setText(str(len(self._segments)) if self._segments else "")
 
         # Build rank map: segment_id -> AttemptResult
         res_map = {r.segment.id: r for r in self._results}
@@ -271,79 +313,93 @@ class AttemptPanel(QWidget):
 
         for row, seg in enumerate(self._display_segments):
             res = res_map.get(seg.id)
+            is_fastest = bool(res and res.is_fastest)
 
-            # Column 0: Rank
+            # Column 0: Rank — quiet ordinal, the fastest one earns the accent.
             if res:
                 item_rank = QTableWidgetItem(f"#{res.rank}")
-                item_rank.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                if res.is_fastest:
-                    item_rank.setForeground(QColor("#34d399"))
+                item_rank.setFont(_mono(9, QFont.Weight.DemiBold))
+                item_rank.setForeground(
+                    QColor(PALETTE["good"]) if is_fastest else QColor(PALETTE["text_faint"])
+                )
             elif seg.is_valid:
-                item_rank = QTableWidgetItem("—")
-                item_rank.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                item_rank.setForeground(QColor("#9ca3af"))
+                item_rank = QTableWidgetItem("–")
+                item_rank.setForeground(QColor(PALETTE["text_faint"]))
             else:
                 item_rank = QTableWidgetItem("•")
-                item_rank.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                item_rank.setForeground(QColor("#fb923c"))
+                item_rank.setForeground(QColor(PALETTE["warn"]))
+            item_rank.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             item_rank.setFlags(item_rank.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            self.table.setItem(row, 0, item_rank)
+            self.table.setItem(row, COL_RANK, item_rank)
 
-            # Column 1: Attempt Name
+            # Column 1: Attempt name — plain UI type, incomplete runs recede.
             item_name = QTableWidgetItem(seg.name)
-            if res and res.is_fastest:
-                item_name.setForeground(QColor("#34d399"))
-            self.table.setItem(row, 1, item_name)
+            item_name.setFont(_ui(10, QFont.Weight.DemiBold if is_fastest else QFont.Weight.Normal))
+            item_name.setForeground(
+                QColor(PALETTE["text_hi"]) if seg.is_valid else QColor(PALETTE["text_lo"])
+            )
+            self.table.setItem(row, COL_NAME, item_name)
 
-            # Column 2: Duration Time
+            # Column 2: Duration — the headline number for each row.
             if seg.is_valid:
-                dur_str = seg.duration_display(self._fps)
-                item_time = QTableWidgetItem(dur_str)
+                item_time = QTableWidgetItem(seg.duration_display(self._fps))
+                item_time.setFont(_mono(11, QFont.Weight.DemiBold))
+                item_time.setForeground(
+                    QColor(PALETTE["good"]) if is_fastest else QColor(PALETTE["text_hi"])
+                )
                 item_time.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-                item_time.setForeground(QColor("#38bdf8"))
             else:
-                item_time = QTableWidgetItem("—")
+                item_time = QTableWidgetItem("–")
+                item_time.setForeground(QColor(PALETTE["text_faint"]))
                 item_time.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                item_time.setForeground(QColor("#6b7280"))
             item_time.setFlags(item_time.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            self.table.setItem(row, 2, item_time)
+            self.table.setItem(row, COL_DURATION, item_time)
 
-            # Column 3: Frames
+            # Column 3: Frame count — supporting precision, deliberately small.
             if seg.is_valid:
                 item_fr = QTableWidgetItem(f"{seg.duration_frames} fr")
                 item_fr.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-                item_fr.setForeground(QColor("#9ca3af"))
             else:
-                item_fr = QTableWidgetItem("—")
+                item_fr = QTableWidgetItem("–")
                 item_fr.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                item_fr.setForeground(QColor("#6b7280"))
+            item_fr.setFont(_mono(9))
+            item_fr.setForeground(QColor(PALETTE["text_faint"]))
             item_fr.setFlags(item_fr.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            self.table.setItem(row, 3, item_fr)
+            self.table.setItem(row, COL_FRAMES, item_fr)
 
-            # Column 4: Delta / Status Tag
+            # Column 4: Delta / status.
             if res:
                 if res.is_fastest:
                     item_delta = QTableWidgetItem("FASTEST")
-                    item_delta.setForeground(QColor("#34d399"))
-                    font_d = item_delta.font()
-                    font_d.setBold(True)
-                    item_delta.setFont(font_d)
+                    item_delta.setForeground(QColor(PALETTE["good"]))
+                    item_delta.setFont(_ui(8, QFont.Weight.Bold))
                     item_delta.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 else:
-                    item_delta = QTableWidgetItem(f"+{res.delta_seconds:.3f}s  (+{res.percent_slower:.1f}%)")
-                    item_delta.setForeground(QColor("#f87171"))
+                    # Rendered two-tone by _DeltaDelegate; text stays intact.
+                    item_delta = QTableWidgetItem(f"+{res.delta_seconds:.3f}s")
+                    item_delta.setFont(_mono(10))
+                    item_delta.setToolTip(
+                        f"+{res.delta_seconds:.3f}s / +{res.delta_frames} frames "
+                        f"/ +{res.percent_slower:.1f}% vs fastest"
+                    )
+                    item_delta.setForeground(QColor(PALETTE["bad"]))
                     item_delta.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             elif seg.validation_error:
-                item_delta = QTableWidgetItem(seg.validation_error)
-                item_delta.setForeground(QColor("#fb923c"))
-                item_delta.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                # The row shows the state; the full reason stays on hover so
+                # this column cannot bully the attempt name out of the table.
+                item_delta = QTableWidgetItem("Incomplete")
+                item_delta.setToolTip(seg.validation_error)
+                item_delta.setForeground(QColor(PALETTE["warn"]))
+                item_delta.setFont(_ui(9))
+                item_delta.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             else:
-                item_delta = QTableWidgetItem("—")
+                item_delta = QTableWidgetItem("–")
+                item_delta.setForeground(QColor(PALETTE["text_faint"]))
                 item_delta.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             item_delta.setFlags(item_delta.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            self.table.setItem(row, 4, item_delta)
+            self.table.setItem(row, COL_DELTA, item_delta)
 
-            self.table.setRowHeight(row, 30)
+            self.table.setRowHeight(row, ROW_HEIGHT)
 
         # Restore selection
         selected_seg = self.get_selected_segment()
@@ -360,15 +416,36 @@ class AttemptPanel(QWidget):
             self.lbl_details.setText("No attempt selected")
             return
 
-        in_tc = seg.in_timecode(self._fps)
-        out_tc = seg.out_timecode(self._fps)
-        in_str = f"Frame {seg.in_frame} ({in_tc})" if seg.in_frame is not None else "None"
-        out_str = f"Frame {seg.out_frame} ({out_tc})" if seg.out_frame is not None else "None"
-        dur = f"{seg.duration_display(self._fps)} ({seg.duration_frames} fr)" if seg.is_valid else "Incomplete"
+        faint = PALETTE["text_faint"]
+        mid = PALETTE["text_mid"]
 
-        self.lbl_details.setText(
-            f"<b>{seg.name}</b>: IN {in_str} → OUT {out_str} | {dur}"
-        )
+        def point(label: str, frame: Optional[int], timecode: str) -> str:
+            if frame is None:
+                return f"<span style='color:{faint}'>{label} —</span>"
+            return (
+                f"<span style='color:{faint}'>{label}</span> "
+                f"<span style='color:{mid}'>{frame}</span> "
+                f"<span style='color:{faint}'>{timecode}</span>"
+            )
+
+        parts = [
+            point("IN", seg.in_frame, seg.in_timecode(self._fps)),
+            point("OUT", seg.out_frame, seg.out_timecode(self._fps)),
+        ]
+        if not seg.is_valid:
+            parts.append(f"<span style='color:{PALETTE['warn']}'>incomplete</span>")
+
+        # The precise loss against the fastest run is detail, not headline:
+        # the table shows the seconds, the full breakdown belongs here.
+        res = next((r for r in self._results if r.segment.id == seg.id), None)
+        if res and not res.is_fastest:
+            parts.append(
+                f"<span style='color:{PALETTE['bad']}'>+{res.delta_frames} frames</span> "
+                f"<span style='color:{faint}'>(+{res.percent_slower:.1f}%)</span>"
+            )
+
+        sep = f"<span style='color:{faint}'> &nbsp;·&nbsp; </span>"
+        self.lbl_details.setText(sep.join(parts))
 
     def _on_table_selection_changed(self) -> None:
         if self._updating_ui:
@@ -387,7 +464,7 @@ class AttemptPanel(QWidget):
     def _on_cell_changed(self, row: int, col: int) -> None:
         if self._updating_ui:
             return
-        if hasattr(self, "_display_segments") and col == 1 and 0 <= row < len(self._display_segments):
+        if hasattr(self, "_display_segments") and col == COL_NAME and 0 <= row < len(self._display_segments):
             item = self.table.item(row, col)
             if item:
                 new_name = item.text().strip()
