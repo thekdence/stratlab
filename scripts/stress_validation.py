@@ -87,6 +87,42 @@ def run_stress_validation():
     assert meta.total_frames >= 7195  # 120s at 60fps
     print("Heavy video loaded and verified successfully.")
 
+    print("\n--- 1b. Measuring Main Playback Cadence ---")
+    window.seek_to_frame(0)
+    wait_for_condition(lambda: window._displayed_frame == 0, timeout_ms=5000)
+
+    observed_frames = []
+    start_frame = window._displayed_frame
+    playback_start = time.perf_counter()
+    window.toggle_playback()
+    wait_for_condition(lambda: window._is_playing, timeout_ms=3000)
+    while time.perf_counter() - playback_start < 2.0:
+        app.processEvents()
+        current = window._displayed_frame
+        if not observed_frames or observed_frames[-1] != current:
+            observed_frames.append(current)
+        time.sleep(0.002)
+    playback_end = time.perf_counter()
+    window.toggle_playback()
+    wait_for_condition(lambda: not window._is_playing, timeout_ms=3000)
+
+    main_elapsed = playback_end - playback_start
+    main_final_frame = window._displayed_frame
+    main_video_seconds = (main_final_frame - start_frame) / float(meta.fps)
+    main_cadence_ratio = main_video_seconds / main_elapsed if main_elapsed > 0 else 0
+    main_display_fps = len(observed_frames) / main_elapsed if main_elapsed > 0 else 0
+    print("Main Playback Cadence Results (2560x1440 @ 60 FPS):", flush=True)
+    print(f"  Wall-clock time elapsed:  {main_elapsed:.3f}s", flush=True)
+    print(f"  Video frames advanced:    {main_final_frame - start_frame} frames ({main_video_seconds:.3f}s)", flush=True)
+    print(f"  Speed ratio vs real-time: {main_cadence_ratio:.2f}x (1.00x is real-time)", flush=True)
+    print(f"  Unique frame renders:     {len(observed_frames)} frames ({main_display_fps:.1f} display FPS)", flush=True)
+    assert main_cadence_ratio >= 0.80, f"Main playback was too slow: {main_cadence_ratio:.2f}x real-time"
+    print("Main playback cadence verified within real-time tolerances!")
+
+    # Return to a deterministic origin for the following coalescing checks.
+    window.seek_to_frame(0)
+    wait_for_condition(lambda: window._displayed_frame == 0, timeout_ms=5000)
+
     print("\n--- 2. Stress Testing Input Coalescing (Rapid +10 Keypresses) ---")
     seek_count = 0
     def on_seek_dispatched(f):

@@ -39,15 +39,19 @@ from stratlab.ui.theme import DARK_STYLESHEET
 class MainWindow(QMainWindow):
     """Primary StratLab desktop application window."""
 
-    # Thread-safe signals to worker
+    # UI-to-worker commands. request_toggle_play is retained as a notification
+    # signal for callers that listened to the pre-state-machine API; explicit
+    # start/stop commands avoid in-transit toggle races.
     request_open_video = Signal(str)
     request_seek = Signal(int)
     request_step = Signal(int)
     request_toggle_play = Signal()
+    request_start_play = Signal()
+    request_stop_play = Signal()
     request_play_segment = Signal(int, int)
     request_cleanup = Signal()
 
-    # Thread-safe signals to compare worker
+    # Thread-safe signals to compare/view playback control
     request_compare_toggle_play = Signal()
     request_compare_stop_play = Signal()
     request_compare_cleanup = Signal()
@@ -66,6 +70,10 @@ class MainWindow(QMainWindow):
         self._desired_frame: int = 0
         self._displayed_frame: int = 0
         self._seek_in_flight: bool = False
+        self._navigation_pending: bool = False
+        self._is_playing: bool = False
+        self._playback_intent: bool = False
+        self._start_pending: bool = False
 
         # Setup primary video worker thread
         self.worker_thread = QThread(self)
@@ -77,8 +85,10 @@ class MainWindow(QMainWindow):
         self.request_open_video.connect(self.worker.open_video)
         self.request_seek.connect(self.worker.seek)
         self.request_step.connect(self.navigate_step)
-        self.request_toggle_play.connect(self.worker.toggle_playback)
+        self.request_start_play.connect(self.worker.start_playback)
+        self.request_stop_play.connect(self.worker.stop_playback)
         self.request_play_segment.connect(self.worker.play_segment)
+        self.request_play_segment.connect(self._on_play_segment_requested)
         self.request_cleanup.connect(self.worker.cleanup)
 
         # Connect worker signals to UI slots
@@ -97,7 +107,6 @@ class MainWindow(QMainWindow):
         self.compare_thread.started.connect(self.compare_worker.initialize)
 
         # Wire compare request signals to compare worker slots (QueuedConnection across threads)
-        self.request_compare_toggle_play.connect(self.compare_worker.toggle_playback)
         self.request_compare_stop_play.connect(self.compare_worker.stop_playback)
         self.request_compare_cleanup.connect(self.compare_worker.cleanup)
 
@@ -184,7 +193,9 @@ class MainWindow(QMainWindow):
         self.compare_view.seek_relative_requested.connect(self.compare_worker.seek_relative)
         self.compare_view.step_relative_requested.connect(self.compare_worker.step_relative)
         self.compare_view.restart_requested.connect(self.compare_worker.restart)
-        self.compare_view.toggle_play_requested.connect(self.compare_worker.toggle_playback)
+        self.compare_view.start_play_requested.connect(self.compare_worker.start_playback)
+        self.compare_view.stop_play_requested.connect(self.compare_worker.stop_playback)
+        self.request_compare_toggle_play.connect(self.compare_view.request_toggle_playback)
 
         self.compare_worker.frames_ready.connect(self.compare_view.on_frames_ready)
         self.compare_worker.playback_state_changed.connect(self.compare_view.on_playback_state_changed)
@@ -347,17 +358,21 @@ class MainWindow(QMainWindow):
         if not self.metadata or self.metadata.total_frames <= 0:
             return
 
-        if self.transport._is_playing:
-            self.request_toggle_play.emit()
+        if self._is_playing or self._playback_intent:
+            # A step is an explicit paused-navigation command.  Stop via the
+            # worker's idempotent stop slot instead of toggling against a stale
+            # UI state, then seek from the frame the user can actually see.
+            self._pause_for_navigation()
 
         total = self.metadata.total_frames
-        self._desired_frame = max(0, min(total - 1, self._desired_frame + delta))
+        base_frame = self._displayed_frame if self._navigation_pending is False else self._desired_frame
+        self._desired_frame = max(0, min(total - 1, base_frame + delta))
 
         # Snappy immediate visual update
         self.timeline.set_current_frame(self._desired_frame)
         self.transport.set_position(self._desired_frame, total, self.metadata.fps)
 
-        self._dispatch_seek_if_idle()
+        self._begin_navigation()
 
     @Slot(int)
     def seek_to_frame(self, frame: int) -> None:
@@ -365,17 +380,37 @@ class MainWindow(QMainWindow):
         if not self.metadata or self.metadata.total_frames <= 0:
             return
 
+        if self._is_playing or self._playback_intent:
+            self._pause_for_navigation()
+
         total = self.metadata.total_frames
         self._desired_frame = max(0, min(total - 1, frame))
 
         self.timeline.set_current_frame(self._desired_frame)
         self.transport.set_position(self._desired_frame, total, self.metadata.fps)
 
+        self._begin_navigation()
+
+    def _pause_for_navigation(self) -> None:
+        """Stop playback before a user seek/step and update the UI immediately."""
+        self._playback_intent = False
+        self._is_playing = False
+        self._start_pending = False
+        self.transport.set_playing(False)
+        self.request_stop_play.emit()
+
+    def _begin_navigation(self) -> None:
+        """Mark the latest user target and dispatch at most one worker seek."""
+        if self._desired_frame == self._displayed_frame:
+            self._navigation_pending = False
+            self._seek_in_flight = False
+            return
+        self._navigation_pending = True
         self._dispatch_seek_if_idle()
 
     def _dispatch_seek_if_idle(self) -> None:
         """Dispatch seek to worker only if worker is currently idle."""
-        if self._seek_in_flight:
+        if self._seek_in_flight or self._is_playing or self._playback_intent:
             return
         if self._desired_frame == self._displayed_frame:
             return
@@ -386,23 +421,69 @@ class MainWindow(QMainWindow):
     @Slot(int, object)
     def _on_frame_ready(self, frame_idx: int, qimage) -> None:
         """Handle decoded frame from worker."""
+
+        if self._navigation_pending and frame_idx != self._desired_frame:
+            # This is an older coalesced seek (or a frame already queued before
+            # the user paused playback).  Keep it off screen and let the next
+            # worker request target the newest desired frame.
+            self._seek_in_flight = False
+            self._dispatch_seek_if_idle()
+            return
+
         self._displayed_frame = frame_idx
         self._seek_in_flight = False
+        self._navigation_pending = False
+
+        if self._is_playing or self._playback_intent:
+            # During playback the worker's wall-clock position is authoritative;
+            # never reconcile it against a stale paused navigation target.
+            self._desired_frame = frame_idx
+        else:
+            self._desired_frame = frame_idx
+
         self.player.set_frame(qimage)
         self.project.current_frame = frame_idx
 
-        # If user changed desired frame while decode was in flight, request latest target immediately
-        if self._desired_frame != self._displayed_frame:
-            self._dispatch_seek_if_idle()
-        else:
-            total = self.metadata.total_frames if self.metadata else 0
-            fps = self.metadata.fps if self.metadata else Fraction(60, 1)
-            self.timeline.set_current_frame(frame_idx)
-            self.transport.set_position(frame_idx, total, fps)
+        total = self.metadata.total_frames if self.metadata else 0
+        fps = self.metadata.fps if self.metadata else Fraction(60, 1)
+        self.timeline.set_current_frame(frame_idx)
+        self.transport.set_position(frame_idx, total, fps)
 
     @Slot()
     def toggle_playback(self) -> None:
-        self.request_toggle_play.emit()
+        if not self.metadata:
+            return
+
+        if self._is_playing or self._playback_intent:
+            self._playback_intent = False
+            self._is_playing = False
+            self._start_pending = False
+            self.transport.set_playing(False)
+            # Keep this public signal as a notification for existing callers;
+            # the explicit stop signal is what reaches the worker.
+            self.request_toggle_play.emit()
+            self.request_stop_play.emit()
+        else:
+            self._playback_intent = True
+            self._is_playing = True
+            self._start_pending = True
+            self.transport.set_playing(True)
+            # Keep the legacy notification, but use an explicit worker command
+            # so rapid Play/Pause requests cannot invert each other in transit.
+            self.request_toggle_play.emit()
+            self.request_start_play.emit()
+
+    @Slot(int, int)
+    def _on_play_segment_requested(self, in_frame: int, out_frame: int) -> None:
+        """Record the UI's playback intent before the queued worker command."""
+        if not self.metadata:
+            return
+        self._navigation_pending = False
+        self._seek_in_flight = False
+        self._playback_intent = True
+        self._is_playing = True
+        self._start_pending = True
+        self.transport.set_playing(True)
 
     # --- Mode Switching ---
 
@@ -422,9 +503,10 @@ class MainWindow(QMainWindow):
             )
             return
 
-        # Pause single video playback
-        if self.transport._is_playing:
-            self.request_toggle_play.emit()
+        # Pause single video playback and stop any previous comparison clock.
+        if self._is_playing or self._playback_intent:
+            self._pause_for_navigation()
+        self.request_compare_stop_play.emit()
 
         self.compare_view.set_comparison_session(
             self.project.video_path,
@@ -438,6 +520,7 @@ class MainWindow(QMainWindow):
     def exit_compare_mode(self) -> None:
         """Return to primary video editor."""
         self.request_compare_stop_play.emit()
+        self.compare_view.stop_playback()
         self.stacked_widget.setCurrentIndex(0)
         self._update_all_views()
         self.status_info.setText("Ready. Mark attempts or press Compare.")
@@ -451,6 +534,9 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Video Error", f"Video file not found:\n{filepath}")
             return
 
+        self._pause_for_navigation()
+        self._navigation_pending = False
+        self._seek_in_flight = False
         self.status_info.setText(f"Loading video: {os.path.basename(filepath)}...")
         self.request_open_video.emit(filepath)
 
@@ -463,6 +549,10 @@ class MainWindow(QMainWindow):
         self._desired_frame = 0
         self._displayed_frame = 0
         self._seek_in_flight = False
+        self._navigation_pending = False
+        self._is_playing = False
+        self._playback_intent = False
+        self._start_pending = False
 
         self.setWindowTitle(f"StratLab — {meta.filename}")
         self.timeline.set_range(meta.total_frames, meta.fps)
@@ -486,10 +576,31 @@ class MainWindow(QMainWindow):
 
     @Slot(bool)
     def _on_playback_state_changed(self, is_playing: bool) -> None:
-        self.transport.set_playing(is_playing)
+        if is_playing:
+            # A queued stale "playing" signal can arrive after a user pause or
+            # step.  The local intent wins until the worker acknowledges the
+            # stop request.
+            if not self._playback_intent:
+                return
+            self._is_playing = True
+            self._start_pending = False
+            self.transport.set_playing(True)
+        else:
+            if self._playback_intent and self._start_pending:
+                # A stop signal left over from the previous cycle arrived
+                # after the explicit start command.  The worker has not yet
+                # acknowledged this start, so do not regress the UI state.
+                return
+            self._is_playing = False
+            self._playback_intent = False
+            self._start_pending = False
+            self.transport.set_playing(False)
 
     @Slot(int)
     def _on_segment_playback_finished(self, out_frame: int) -> None:
+        self._is_playing = False
+        self._playback_intent = False
+        self._start_pending = False
         self.transport.set_playing(False)
 
     @Slot(str)
@@ -535,11 +646,18 @@ class MainWindow(QMainWindow):
     # --- Project Persistence Actions ---
 
     def new_project(self) -> None:
+        self._pause_for_navigation()
+        self.request_compare_stop_play.emit()
         self.project = Project()
         self.metadata = None
         self._desired_frame = 0
         self._displayed_frame = 0
         self._seek_in_flight = False
+        self._navigation_pending = False
+        self._is_playing = False
+        self._playback_intent = False
+        self._start_pending = False
+        self.compare_view.stop_playback()
         self.player.clear()
         self.attempt_panel.set_segments([])
         self.timeline.set_range(0, Fraction(60, 1))
@@ -664,6 +782,8 @@ class MainWindow(QMainWindow):
         if app:
             app.removeEventFilter(self)
 
+        self._pause_for_navigation()
+        self.request_compare_stop_play.emit()
         self.request_cleanup.emit()
         self.worker_thread.quit()
         self.worker_thread.wait(2000)

@@ -30,6 +30,8 @@ class CompareView(QWidget):
     step_relative_requested = Signal(int)
     restart_requested = Signal()
     toggle_play_requested = Signal()
+    start_play_requested = Signal()
+    stop_play_requested = Signal()
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -43,7 +45,10 @@ class CompareView(QWidget):
         self._desired_rel_frame: int = 0
         self._displayed_rel_frame: int = 0
         self._seek_in_flight: bool = False
+        self._navigation_pending: bool = False
         self._is_playing: bool = False
+        self._playback_intent: bool = False
+        self._start_pending: bool = False
         self.max_rel_frame: int = 0
 
         self._build_ui()
@@ -169,7 +174,7 @@ class CompareView(QWidget):
         self.btn_play = QPushButton("▶ Play")
         self.btn_play.setObjectName("btn-play")
         self.btn_play.setToolTip("Play / Pause synchronized comparison (Space)")
-        self.btn_play.clicked.connect(self.toggle_play_requested.emit)
+        self.btn_play.clicked.connect(self.request_toggle_playback)
         transport_layout.addWidget(self.btn_play)
 
         self.btn_next1 = QPushButton("+1 ›")
@@ -246,6 +251,9 @@ class CompareView(QWidget):
         if self.combo_left.count() == 0 or self.combo_right.count() == 0:
             return
 
+        if self._is_playing:
+            self._stop_for_navigation()
+
         self.seg_left = self.combo_left.currentData()
         self.seg_right = self.combo_right.currentData()
 
@@ -260,6 +268,10 @@ class CompareView(QWidget):
         self._desired_rel_frame = 0
         self._displayed_rel_frame = 0
         self._seek_in_flight = False
+        self._navigation_pending = False
+        self._is_playing = False
+        self._playback_intent = False
+        self._start_pending = False
 
         # Update delta banner
         left_sec = self.seg_left.duration_seconds(self.fps)
@@ -305,10 +317,13 @@ class CompareView(QWidget):
 
     def seek_relative(self, rel_frame: int) -> None:
         """Coalesced relative seeking."""
+        if self._is_playing:
+            self._stop_for_navigation()
+
         self._desired_rel_frame = max(0, min(rel_frame, self.max_rel_frame))
         self.slider.setValue(self._desired_rel_frame)
         self._update_counter_labels(self._desired_rel_frame)
-        self._dispatch_seek_if_idle()
+        self._begin_navigation()
 
     def step_relative(self, delta: int) -> None:
         """Coalesced relative stepping."""
@@ -316,10 +331,53 @@ class CompareView(QWidget):
 
     def restart(self) -> None:
         """Restart comparison from relative frame 0."""
-        self.seek_relative(0)
+        self._stop_for_navigation()
+        self._desired_rel_frame = 0
+        self.slider.setValue(0)
+        self._update_counter_labels(0)
+        self._navigation_pending = True
+        self._seek_in_flight = True
+        self.restart_requested.emit()
+
+    def _stop_for_navigation(self) -> None:
+        """Pause comparison before selection changes or user navigation."""
+        self._playback_intent = False
+        self._is_playing = False
+        self._start_pending = False
+        self._set_play_button(False)
+        self.stop_play_requested.emit()
+
+    def stop_playback(self) -> None:
+        """Force the view to the stopped state when leaving Compare mode."""
+        self._stop_for_navigation()
+
+    def request_toggle_playback(self) -> None:
+        """Request an explicit start/stop without toggling stale worker state."""
+        if self._is_playing or self._playback_intent:
+            self._playback_intent = False
+            self._is_playing = False
+            self._start_pending = False
+            self._set_play_button(False)
+            self.toggle_play_requested.emit()
+            self.stop_play_requested.emit()
+        else:
+            self._playback_intent = True
+            self._is_playing = True
+            self._start_pending = True
+            self._set_play_button(True)
+            self.toggle_play_requested.emit()
+            self.start_play_requested.emit()
+
+    def _begin_navigation(self) -> None:
+        if self._desired_rel_frame == self._displayed_rel_frame:
+            self._navigation_pending = False
+            self._seek_in_flight = False
+            return
+        self._navigation_pending = True
+        self._dispatch_seek_if_idle()
 
     def _dispatch_seek_if_idle(self) -> None:
-        if self._seek_in_flight:
+        if self._seek_in_flight or self._is_playing:
             return
         if self._desired_rel_frame == self._displayed_rel_frame:
             return
@@ -336,8 +394,18 @@ class CompareView(QWidget):
         right_frozen: bool,
     ) -> None:
         """Render decoded frames on left and right players."""
+
+        if self._navigation_pending and rel_frame != self._desired_rel_frame:
+            # Ignore an older decode that was already queued when the user
+            # changed the requested relative frame.
+            self._seek_in_flight = False
+            self._dispatch_seek_if_idle()
+            return
+
         self._displayed_rel_frame = rel_frame
         self._seek_in_flight = False
+        self._navigation_pending = False
+        self._desired_rel_frame = rel_frame
 
         self.player_left.set_frame(img_left)
         self.player_right.set_frame(img_right)
@@ -368,10 +436,8 @@ class CompareView(QWidget):
             else:
                 self.right_status.setStyleSheet("color: #9ca3af; font-family: Consolas, monospace; font-size: 11px;")
 
-        # Coalescing check: dispatch newest target if changed while in flight (when not playing)
-        if self._is_playing:
-            self._desired_rel_frame = rel_frame
-        elif self._desired_rel_frame != self._displayed_rel_frame:
+        # Coalescing check: dispatch newest target if changed while in flight.
+        if self._desired_rel_frame != self._displayed_rel_frame:
             self._dispatch_seek_if_idle()
 
     def _update_counter_labels(self, rel_frame: int) -> None:
@@ -382,7 +448,21 @@ class CompareView(QWidget):
 
     @Slot(bool)
     def on_playback_state_changed(self, is_playing: bool) -> None:
-        self._is_playing = is_playing
+        if is_playing:
+            if not self._playback_intent:
+                return
+            self._is_playing = True
+            self._start_pending = False
+            self._set_play_button(True)
+        else:
+            if self._playback_intent and self._start_pending:
+                return
+            self._is_playing = False
+            self._playback_intent = False
+            self._start_pending = False
+            self._set_play_button(False)
+
+    def _set_play_button(self, is_playing: bool) -> None:
         if is_playing:
             self.btn_play.setText("⏸ Pause")
             self.btn_play.setStyleSheet("background-color: #854d0e; border-color: #ca8a04; color: #fef08a;")

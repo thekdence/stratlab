@@ -27,7 +27,9 @@ class VideoWorker(QObject):
         self._target_seek_frame: Optional[int] = None
         self._segment_out_frame: Optional[int] = None
         self._timer: Optional[QTimer] = None
-        self._last_tick_time: float = 0.0
+        self._playback_start_time: float = 0.0
+        self._playback_start_frame: int = 0
+        self._last_rendered_frame: int = -1
 
     @Slot()
     def initialize(self) -> None:
@@ -69,21 +71,24 @@ class VideoWorker(QObject):
         """Seek to a target frame number."""
         if not self.reader:
             return
-
-        target_frame = max(0, min(target_frame, self.reader.total_frames - 1))
-        self._target_seek_frame = target_frame
-        self._decode_current_or_pending()
+        try:
+            target_frame = max(0, min(target_frame, self.reader.total_frames - 1))
+            self._target_seek_frame = target_frame
+            self._decode_current_or_pending()
+        except Exception as e:
+            self.error_occurred.emit(f"Failed to seek video: {e}")
 
     @Slot(int)
     def step_frames(self, delta: int) -> None:
         """Step current frame by delta (+1, -1, +10, -10)."""
         if not self.reader:
             return
-        if self.is_playing:
+        try:
             self.stop_playback()
-
-        new_frame = self.current_frame + delta
-        self.seek(new_frame)
+            new_frame = self.current_frame + delta
+            self.seek(new_frame)
+        except Exception as e:
+            self.error_occurred.emit(f"Failed to step video: {e}")
 
     @Slot()
     def toggle_playback(self) -> None:
@@ -98,60 +103,97 @@ class VideoWorker(QObject):
         """Start regular video playback."""
         if not self.reader or self.is_playing:
             return
-        self._segment_out_frame = None
-        self.is_playing = True
-        self._last_tick_time = time.perf_counter()
-        if self._timer:
-            self._timer.start()
-        self.playback_state_changed.emit(True)
+        try:
+            self._segment_out_frame = None
+
+            # Play from the beginning when the last source frame is already
+            # displayed.  Decode it before the first timed tick so restarting
+            # at EOF is visible immediately and never shows a stale EOF frame.
+            if self.current_frame >= self.reader.total_frames - 1:
+                self._emit_decoded_frame(0)
+
+            self.is_playing = True
+            self._playback_start_time = time.perf_counter()
+            self._playback_start_frame = self.current_frame
+            self._last_rendered_frame = self.current_frame
+            if self._timer:
+                self._timer.start()
+            self.playback_state_changed.emit(True)
+        except Exception as e:
+            self.is_playing = False
+            if self._timer:
+                self._timer.stop()
+            self.error_occurred.emit(f"Failed to start playback: {e}")
 
     @Slot(int, int)
     def play_segment(self, in_frame: int, out_frame: int) -> None:
         """Play strictly from in_frame to out_frame, then pause."""
         if not self.reader:
             return
-        self.seek(in_frame)
-        self._segment_out_frame = out_frame
-        self.is_playing = True
-        self._last_tick_time = time.perf_counter()
-        if self._timer:
-            self._timer.start()
-        self.playback_state_changed.emit(True)
+        try:
+            self.stop_playback()
+            in_frame = max(0, min(in_frame, self.reader.total_frames - 1))
+            out_frame = max(in_frame, min(out_frame, self.reader.total_frames - 1))
+            self._segment_out_frame = out_frame
+            self._target_seek_frame = in_frame
+            self._decode_current_or_pending()
+
+            self.is_playing = True
+            self._playback_start_time = time.perf_counter()
+            self._playback_start_frame = self.current_frame
+            self._last_rendered_frame = self.current_frame
+            if self._timer:
+                self._timer.start()
+            self.playback_state_changed.emit(True)
+        except Exception as e:
+            self.is_playing = False
+            if self._timer:
+                self._timer.stop()
+            self._segment_out_frame = None
+            self.error_occurred.emit(f"Failed to play segment: {e}")
 
     @Slot()
     def stop_playback(self) -> None:
         """Pause playback."""
-        if not self.is_playing:
-            return
+        was_playing = self.is_playing
         self.is_playing = False
         if self._timer:
             self._timer.stop()
         self._segment_out_frame = None
-        self.playback_state_changed.emit(False)
+        if was_playing:
+            self.playback_state_changed.emit(False)
 
     def _on_play_tick(self) -> None:
         """Executed on each timer tick during playback."""
         if not self.reader or not self.is_playing:
             return
+        try:
+            elapsed = max(0.0, time.perf_counter() - self._playback_start_time)
+            target_frame = self._playback_start_frame + int(elapsed * float(self.reader.fps))
+            end_frame = (
+                self._segment_out_frame
+                if self._segment_out_frame is not None
+                else self.reader.total_frames - 1
+            )
 
-        next_frame = self.current_frame + 1
+            # The wall clock owns playback position.  If decoding falls behind,
+            # jump directly to the newest frame instead of slowly replaying
+            # obsolete frames and accumulating latency.
+            if target_frame >= end_frame:
+                if self.current_frame < end_frame:
+                    self._emit_decoded_frame(end_frame)
+                out_frame = self._segment_out_frame
+                self.stop_playback()
+                if out_frame is not None:
+                    self.segment_playback_finished.emit(out_frame)
+                return
 
-        # Check if we reached segment end
-        if self._segment_out_frame is not None and next_frame > self._segment_out_frame:
-            out_f = self._segment_out_frame
+            if target_frame > self._last_rendered_frame:
+                self._emit_decoded_frame(target_frame)
+                self._last_rendered_frame = self.current_frame
+        except Exception as e:
             self.stop_playback()
-            self.segment_playback_finished.emit(out_f)
-            return
-
-        # Check if reached end of video
-        if next_frame >= self.reader.total_frames:
-            self.stop_playback()
-            return
-
-        self.current_frame = next_frame
-        idx, img = self.reader.get_frame(next_frame)
-        self.current_frame = idx
-        self.frame_ready.emit(idx, img)
+            self.error_occurred.emit(f"Playback decode failed: {e}")
 
     def _decode_current_or_pending(self) -> None:
         """Decode the latest pending seek target."""
@@ -161,7 +203,13 @@ class VideoWorker(QObject):
         target = self._target_seek_frame
         self._target_seek_frame = None
 
-        idx, img = self.reader.get_frame(target)
+        self._emit_decoded_frame(target)
+
+    def _emit_decoded_frame(self, target_frame: int) -> None:
+        """Decode one frame and publish it as the worker's current frame."""
+        if not self.reader:
+            return
+        idx, img = self.reader.get_frame(target_frame)
         self.current_frame = idx
         self.frame_ready.emit(idx, img)
 

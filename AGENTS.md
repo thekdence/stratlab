@@ -33,6 +33,10 @@ StratLab is a Windows desktop application for speedrunners to rapidly compare 2 
    - Frame navigation, playhead stepping, and IN/OUT marking are authoritatively routed via `MainWindow.eventFilter` (ignoring active `QLineEdit` inputs) to eliminate duplicate shortcut collisions and dropped key events.
 8. **Synchronized Comparison Engine**:
    - Side-by-side strategy comparison operates dual independent `VideoReader` instances on `CompareWorker` (`QThread`), synchronously aligned from relative frame 0. When the shorter attempt reaches its OUT frame, it cleanly freezes on that frame while the longer attempt continues.
+9. **Playback / Navigation Separation**:
+   - During playback, the worker's wall-clock position is authoritative and the UI mirrors emitted frames without seeking toward stale navigation targets. User seeks and steps pause playback before entering the coalesced paused-navigation path.
+10. **Decoded Pixel Memory Bound**:
+   - `FrameCache` is bounded by both frame count and expanded `QImage` byte size so high-resolution recordings cannot grow the RGB cache without limit.
 
 ## Canonical Verification Commands
 ```powershell
