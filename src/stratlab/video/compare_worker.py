@@ -1,6 +1,7 @@
 """Dedicated background worker for side-by-side synchronized attempt comparison."""
 
 from __future__ import annotations
+import time
 from fractions import Fraction
 from typing import Optional
 from PySide6.QtCore import QObject, Signal, Slot, QTimer, Qt
@@ -35,6 +36,15 @@ class CompareWorker(QObject):
 
         self._pending_rel_frame: Optional[int] = None
         self._timer: Optional[QTimer] = None
+
+        # Wall-clock real-time pacing state
+        self._playback_start_time: float = 0.0
+        self._playback_start_rel_frame: int = 0
+        self._last_rendered_rel_frame: int = -1
+
+        # Frozen frame caches (saves 50% CPU decode once shorter attempt completes)
+        self._frozen_img_left: Optional[QImage] = None
+        self._frozen_img_right: Optional[QImage] = None
 
     @Slot()
     def initialize(self) -> None:
@@ -76,8 +86,11 @@ class CompareWorker(QObject):
                 self._timer.setInterval(interval_ms)
 
             # Start at relative frame 0
+            self._frozen_img_left = None
+            self._frozen_img_right = None
             self.rel_frame = 0
             self._pending_rel_frame = None
+            self._last_rendered_rel_frame = -1
             self._decode_relative_frame(0)
         except Exception as e:
             self.error_occurred.emit(f"Failed to setup comparison: {e}")
@@ -88,6 +101,8 @@ class CompareWorker(QObject):
         if not self.seg_left or not self.seg_right:
             return
 
+        self._frozen_img_left = None
+        self._frozen_img_right = None
         rel_frame = max(0, min(rel_frame, self.max_rel_frame))
         self._pending_rel_frame = rel_frame
         self._decode_pending()
@@ -123,8 +138,13 @@ class CompareWorker(QObject):
         # If already at end, wrap to start
         if self.rel_frame >= self.max_rel_frame:
             self.rel_frame = 0
+            self._frozen_img_left = None
+            self._frozen_img_right = None
 
         self.is_playing = True
+        self._playback_start_time = time.perf_counter()
+        self._playback_start_rel_frame = self.rel_frame
+        self._last_rendered_rel_frame = self.rel_frame
         if self._timer:
             self._timer.start()
         self.playback_state_changed.emit(True)
@@ -142,13 +162,20 @@ class CompareWorker(QObject):
         if not self.is_playing:
             return
 
-        next_rel = self.rel_frame + 1
-        if next_rel > self.max_rel_frame:
+        elapsed = time.perf_counter() - self._playback_start_time
+        target_rel = self._playback_start_rel_frame + int(round(elapsed * float(self.fps)))
+
+        if target_rel >= self.max_rel_frame:
             self.stop_playback()
+            self._decode_relative_frame(self.max_rel_frame)
             self.comparison_finished.emit()
             return
 
-        self._decode_relative_frame(next_rel)
+        if target_rel == self._last_rendered_rel_frame:
+            return
+
+        self._last_rendered_rel_frame = target_rel
+        self._decode_relative_frame(target_rel)
 
     def _decode_pending(self) -> None:
         if self._pending_rel_frame is None:
@@ -176,9 +203,22 @@ class CompareWorker(QObject):
         right_finished = target_rel >= self.seg_right.duration_frames
         right_src = min(self.seg_right.out_frame, self.seg_right.in_frame + target_rel)
 
-        # Decode frames
-        _, img_left = self.reader_left.get_frame(left_src)
-        _, img_right = self.reader_right.get_frame(right_src)
+        # Decode frames (caching frozen frames to avoid redundant decodes)
+        if left_finished:
+            if self._frozen_img_left is None:
+                _, self._frozen_img_left = self.reader_left.get_frame(left_src)
+            img_left = self._frozen_img_left
+        else:
+            self._frozen_img_left = None
+            _, img_left = self.reader_left.get_frame(left_src)
+
+        if right_finished:
+            if self._frozen_img_right is None:
+                _, self._frozen_img_right = self.reader_right.get_frame(right_src)
+            img_right = self._frozen_img_right
+        else:
+            self._frozen_img_right = None
+            _, img_right = self.reader_right.get_frame(right_src)
 
         self.frames_ready.emit(target_rel, img_left, img_right, left_finished, right_finished)
 
@@ -198,3 +238,5 @@ class CompareWorker(QObject):
         self.video_path = ""
         self.seg_left = None
         self.seg_right = None
+        self._frozen_img_left = None
+        self._frozen_img_right = None

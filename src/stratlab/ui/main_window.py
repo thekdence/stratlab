@@ -18,6 +18,8 @@ from PySide6.QtWidgets import (
     QLabel,
     QApplication,
     QLineEdit,
+    QTextEdit,
+    QPlainTextEdit,
 )
 
 from stratlab.core.segment import Segment
@@ -44,6 +46,11 @@ class MainWindow(QMainWindow):
     request_toggle_play = Signal()
     request_play_segment = Signal(int, int)
     request_cleanup = Signal()
+
+    # Thread-safe signals to compare worker
+    request_compare_toggle_play = Signal()
+    request_compare_stop_play = Signal()
+    request_compare_cleanup = Signal()
 
     def __init__(self, initial_video: Optional[str] = None):
         super().__init__()
@@ -88,13 +95,23 @@ class MainWindow(QMainWindow):
         self.compare_worker = CompareWorker()
         self.compare_worker.moveToThread(self.compare_thread)
         self.compare_thread.started.connect(self.compare_worker.initialize)
+
+        # Wire compare request signals to compare worker slots (QueuedConnection across threads)
+        self.request_compare_toggle_play.connect(self.compare_worker.toggle_playback)
+        self.request_compare_stop_play.connect(self.compare_worker.stop_playback)
+        self.request_compare_cleanup.connect(self.compare_worker.cleanup)
+
         self.compare_thread.start()
 
         self._build_ui()
         self._setup_menubar()
 
-        # Install authoritative window event filter for navigation shortcuts
-        self.installEventFilter(self)
+        # Install authoritative application event filter for navigation shortcuts
+        app = QApplication.instance()
+        if app:
+            app.installEventFilter(self)
+        else:
+            self.installEventFilter(self)
 
         if initial_video and os.path.isfile(initial_video):
             self.load_video(initial_video)
@@ -270,9 +287,17 @@ class MainWindow(QMainWindow):
             key = key_event.key()
             modifiers = key_event.modifiers()
 
-            # If user is typing in a text entry, let normal editing proceed
+            # Ignore if a modal dialog is currently active
+            if QApplication.activeModalWidget() is not None:
+                return super().eventFilter(watched, event)
+
+            # Ignore events targeted at other top-level windows
+            if isinstance(watched, QWidget) and watched.window() != self:
+                return super().eventFilter(watched, event)
+
+            # If user is typing in an editable text entry, let normal editing proceed
             focus_w = QApplication.focusWidget()
-            if isinstance(focus_w, QLineEdit):
+            if isinstance(focus_w, (QLineEdit, QTextEdit, QPlainTextEdit)):
                 return super().eventFilter(watched, event)
 
             # In Compare Mode: handle Esc and Space
@@ -281,7 +306,7 @@ class MainWindow(QMainWindow):
                     self.exit_compare_mode()
                     return True
                 elif key == Qt.Key.Key_Space:
-                    self.compare_worker.toggle_playback()
+                    self.request_compare_toggle_play.emit()
                     return True
                 elif key == Qt.Key.Key_Left:
                     delta = -10 if (modifiers & Qt.KeyboardModifier.ShiftModifier) else -1
@@ -412,7 +437,7 @@ class MainWindow(QMainWindow):
     @Slot()
     def exit_compare_mode(self) -> None:
         """Return to primary video editor."""
-        self.compare_worker.stop_playback()
+        self.request_compare_stop_play.emit()
         self.stacked_widget.setCurrentIndex(0)
         self._update_all_views()
         self.status_info.setText("Ready. Mark attempts or press Compare.")
@@ -635,11 +660,15 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         """Clean shutdown of worker threads and resources."""
+        app = QApplication.instance()
+        if app:
+            app.removeEventFilter(self)
+
         self.request_cleanup.emit()
         self.worker_thread.quit()
         self.worker_thread.wait(2000)
 
-        self.compare_worker.cleanup()
+        self.request_compare_cleanup.emit()
         self.compare_thread.quit()
         self.compare_thread.wait(2000)
 

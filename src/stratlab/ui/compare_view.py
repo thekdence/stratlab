@@ -368,8 +368,10 @@ class CompareView(QWidget):
             else:
                 self.right_status.setStyleSheet("color: #9ca3af; font-family: Consolas, monospace; font-size: 11px;")
 
-        # Coalescing check: dispatch newest target if changed while in flight
-        if self._desired_rel_frame != self._displayed_rel_frame:
+        # Coalescing check: dispatch newest target if changed while in flight (when not playing)
+        if self._is_playing:
+            self._desired_rel_frame = rel_frame
+        elif self._desired_rel_frame != self._displayed_rel_frame:
             self._dispatch_seek_if_idle()
 
     def _update_counter_labels(self, rel_frame: int) -> None:
