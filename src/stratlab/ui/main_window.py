@@ -142,8 +142,8 @@ class MainWindow(QMainWindow):
         # PAGE 0: Single Video Editor
         editor_page = QWidget()
         editor_layout = QHBoxLayout(editor_page)
-        editor_layout.setContentsMargins(6, 6, 6, 6)
-        editor_layout.setSpacing(6)
+        editor_layout.setContentsMargins(10, 8, 10, 6)
+        editor_layout.setSpacing(0)
 
         self.main_splitter = QSplitter(Qt.Orientation.Horizontal, self)
 
@@ -151,7 +151,7 @@ class MainWindow(QMainWindow):
         left_pane = QWidget()
         left_layout = QVBoxLayout(left_pane)
         left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.setSpacing(4)
+        left_layout.setSpacing(2)
 
         self.player = VideoPlayer()
         self.player.file_dropped.connect(self.load_video)
@@ -179,10 +179,13 @@ class MainWindow(QMainWindow):
         self.attempt_panel.segment_selected.connect(self._on_segment_selection_changed)
         self.attempt_panel.compare_requested.connect(self.enter_compare_mode)
         self.attempt_panel.status_message.connect(self._show_status_message)
+        # Below this the fixed numeric columns would be clipped by the splitter.
+        self.attempt_panel.setMinimumWidth(368)
         self.main_splitter.addWidget(self.attempt_panel)
 
-        # 68% for video, 32% for attempt panel
+        # ~69% for video, ~31% for attempt panel
         self.main_splitter.setSizes([880, 400])
+        self.main_splitter.setHandleWidth(10)
         editor_layout.addWidget(self.main_splitter)
         self.stacked_widget.addWidget(editor_page)
 
@@ -205,6 +208,7 @@ class MainWindow(QMainWindow):
 
         # Status bar
         self.status_bar = self.statusBar()
+        self.status_bar.setSizeGripEnabled(False)
         self.status_info = QLabel("Ready. Open or drag & drop a video to begin.")
         self.status_bar.addWidget(self.status_info, stretch=1)
 
