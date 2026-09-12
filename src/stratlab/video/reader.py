@@ -83,6 +83,10 @@ class VideoReader:
             codec_name=self.stream.codec_context.name or "unknown",
         )
 
+        # QImages hold expanded RGB pixels.  Bound by bytes as well as frame
+        # count so a 1440p recording cannot turn the navigation cache into a
+        # multi-gigabyte allocation.  Small test/preview videos still retain
+        # the requested frame-count cache.
         self.cache = FrameCache(max_frames=cache_size)
         self._current_frame_idx: int = -1
         self._decoder_iter = None
@@ -125,6 +129,11 @@ class VideoReader:
         # Check LRU cache first
         cached = self.cache.get(target_frame)
         if cached is not None:
+            # A cache hit may jump away from the suspended PyAV generator.  Do
+            # not resume that generator as if it were positioned at the cache
+            # hit; doing so can return a different frame on the next step.
+            if target_frame != self._current_frame_idx:
+                self._decoder_iter = None
             self._current_frame_idx = target_frame
             return target_frame, cached
 
@@ -161,6 +170,7 @@ class VideoReader:
         if last_frame is not None:
             qimg = self._frame_to_qimage(last_frame)
             self.cache.put(self._current_frame_idx, qimg)
+            self._decoder_iter = None
             return self._current_frame_idx, qimg
 
         # Fallback: if decode yielded no frame, return empty blank image
