@@ -177,25 +177,21 @@ def run_verification():
 
     r1_name = window.results_view.table.item(1, 1).text()
     r1_dur = window.results_view.table.item(1, 2).text()
+    r1_fr = window.results_view.table.item(1, 3).text()
     r1_delta = window.results_view.table.item(1, 4).text()
-    r1_flost = window.results_view.table.item(1, 5).text()
-    r1_pct = window.results_view.table.item(1, 6).text()
-    print(f"Rank 2: {r1_name} | {r1_dur} | {r1_delta} | {r1_flost} | {r1_pct}")
+    print(f"Rank 2: {r1_name} | {r1_dur} | {r1_fr} | {r1_delta}")
     assert r1_name == "Strat B"
     assert "+0.083s" in r1_delta or "+0.084s" in r1_delta
-    assert "+5 fr" in r1_flost
-    assert "+1.99%" in r1_pct
+    assert "256 fr" in r1_fr
 
     r2_name = window.results_view.table.item(2, 1).text()
     r2_dur = window.results_view.table.item(2, 2).text()
+    r2_fr = window.results_view.table.item(2, 3).text()
     r2_delta = window.results_view.table.item(2, 4).text()
-    r2_flost = window.results_view.table.item(2, 5).text()
-    r2_pct = window.results_view.table.item(2, 6).text()
-    print(f"Rank 3: {r2_name} | {r2_dur} | {r2_delta} | {r2_flost} | {r2_pct}")
+    print(f"Rank 3: {r2_name} | {r2_dur} | {r2_fr} | {r2_delta}")
     assert r2_name == "Strat C"
     assert "+0.367s" in r2_delta
-    assert "+22 fr" in r2_flost
-    assert "+8.76%" in r2_pct
+    assert "273 fr" in r2_fr
 
     print("\n--- 5. Testing Project Persistence (Save & Reload) ---")
     window.project.segments = window.segment_list.get_segments()
