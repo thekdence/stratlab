@@ -4,13 +4,17 @@ A frame-accurate Windows desktop utility for speedrunners to rapidly compare mul
 
 ## Key Features
 
-- **Frame-Accurate Video Scrubbing**: Built with PyAV (direct FFmpeg bindings) with CFR frame-indexing and a bounded LRU cache for instantaneous single-frame stepping.
+- **Frame-Accurate Video Scrubbing & Coalescing**: Built with PyAV with CFR frame-indexing, bounded LRU caching, and request coalescing for lag-free rapid stepping and dragging.
 - **Speedrun Invariants**: Authoritative integer frame numbers prevent floating-point time drift across common fractional broadcast framerates (59.94, 29.97, 23.976 FPS).
-- **Segment Management**: Create and track 2+ attempts, mark IN and OUT points, reorder, rename, and play segments in isolation.
-- **Instant Comparison & Ranking**:
-  - Automatically calculates rankings, fastest attempt, duration in seconds/ms/frames.
-  - Computes exact deltas from fastest (`+0.084s / +5 frames / +2.01%`).
-  - One-click copy formatted summary for Discord / notes.
+- **Streamlined Workflow with Auto-Attempt Creation**:
+  - Press `I` at run start (auto-creates Attempt 1 if none exists).
+  - Press `O` at run end to complete Attempt 1.
+  - Seek to next run and press `I` — StratLab automatically creates Attempt 2 and sets its IN point!
+- **Unified Attempt & Results Dashboard**: Real-time ranking, durations, frame counts, and deltas (`+0.084s / +5 frames / +2.01%`) in a clean, compact panel.
+- **Side-by-Side Synchronized Comparison Mode**:
+  - Compare any two attempts side-by-side with synchronized relative playback from relative frame 0.
+  - The shorter attempt freezes on its OUT frame when it completes, clearly showing how far behind the other attempt is.
+  - Relative timeline slider, synchronized stepping, and one-click restart.
 - **Lightweight JSON Persistence**: Save and reopen sessions (`.stratlab`), with graceful handling of missing or relocated video files.
 - **Zero-Flash Launchers**: Integrated with Windows Start Menu, Desktop, and Listary.
 
@@ -20,13 +24,14 @@ A frame-accurate Windows desktop utility for speedrunners to rapidly compare mul
 
 | Shortcut | Action |
 |---|---|
-| `Left Arrow` | Step -1 Frame |
-| `Right Arrow` | Step +1 Frame |
-| `Shift + Left Arrow` | Step -10 Frames |
-| `Shift + Right Arrow` | Step +10 Frames |
-| `Space` | Play / Pause Toggle |
-| `I` | Mark IN point for active attempt |
-| `O` | Mark OUT point for active attempt |
+| `Left Arrow` | Step -1 Frame (or -1 relative frame in Compare Mode) |
+| `Right Arrow` | Step +1 Frame (or +1 relative frame in Compare Mode) |
+| `Shift + Left Arrow` | Step -10 Frames (or -10 relative frames in Compare Mode) |
+| `Shift + Right Arrow` | Step +10 Frames (or +10 relative frames in Compare Mode) |
+| `Space` | Play / Pause Toggle (Single player or Compare Mode) |
+| `I` | Mark IN (auto-creates next attempt when current is complete) |
+| `O` | Mark OUT for active attempt |
+| `Esc` | Exit Side-by-Side Compare Mode |
 | `Ctrl + N` | New Project |
 | `Ctrl + O` | Open Video File |
 | `Ctrl + S` | Save Project |
