@@ -1,0 +1,28 @@
+[project]
+name = "stratlab"
+version = "0.1.0"
+description = "A speedrunning utility for quickly comparing multiple attempts from a single recording."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "av>=14.0.0",
+    "numpy>=1.26.0",
+    "PySide6>=6.8.0",
+]
+
+[project.scripts]
+stratlab = "stratlab.__main__:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-qt>=4.4.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
