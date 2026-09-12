@@ -128,11 +128,11 @@ class VideoReader:
             self._current_frame_idx = target_frame
             return target_frame, cached
 
-        # Check if we can simply step forward sequentially (within a 5-frame forward window)
+        # Check if we can simply step forward sequentially (within a 45-frame forward window)
         can_step_forward = (
             self._decoder_iter is not None
             and self._current_frame_idx < target_frame
-            and (target_frame - self._current_frame_idx) <= 5
+            and (target_frame - self._current_frame_idx) <= 45
         )
 
         if not can_step_forward:
@@ -141,8 +141,7 @@ class VideoReader:
             self._decoder_iter = self.container.decode(self.stream)
 
         # Decode frames sequentially until target frame is reached
-        last_img: QImage | None = None
-        last_idx: int = self._current_frame_idx
+        last_frame = None
 
         for frame in self._decoder_iter:
             pts = frame.pts if frame.pts is not None else frame.dts
@@ -150,17 +149,19 @@ class VideoReader:
                 continue
 
             idx = self._pts_to_frame_idx(pts)
-            qimg = self._frame_to_qimage(frame)
-            self.cache.put(idx, qimg)
-            last_img = qimg
-            last_idx = idx
             self._current_frame_idx = idx
+            last_frame = frame
 
+            # Only perform costly RGB conversion and allocation on the target frame
             if idx >= target_frame:
+                qimg = self._frame_to_qimage(frame)
+                self.cache.put(idx, qimg)
                 return idx, qimg
 
-        if last_img is not None:
-            return last_idx, last_img
+        if last_frame is not None:
+            qimg = self._frame_to_qimage(last_frame)
+            self.cache.put(self._current_frame_idx, qimg)
+            return self._current_frame_idx, qimg
 
         # Fallback: if decode yielded no frame, return empty blank image
         fallback = QImage(self.metadata.width, self.metadata.height, QImage.Format.Format_RGB888)

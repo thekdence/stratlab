@@ -219,6 +219,44 @@ def run_stress_validation():
     assert window.compare_view._displayed_rel_frame == 0
     print("Restart verified: both panes synchronously reset to relative frame 0.")
 
+    # 5b. Exercise Synchronized Playback Cadence for a representative interval
+    print("\n--- 5b. Exercising Synchronized Compare Playback Cadence ---")
+    rendered_frames = []
+    def on_playback_frame(rel_f, img_l, img_r, l_froz, r_froz):
+        rendered_frames.append((time.perf_counter(), rel_f))
+
+    window.compare_worker.frames_ready.connect(on_playback_frame)
+
+    t_play_start = time.perf_counter()
+    window.request_compare_toggle_play.emit()
+
+    # Play until at least 120 relative frames have passed (2.0s of 60fps video) or 2.5s wall-clock
+    wait_for_condition(
+        lambda: window.compare_view._displayed_rel_frame >= 120 or (time.perf_counter() - t_play_start) >= 2.5,
+        timeout_ms=6000,
+    )
+    t_play_end = time.perf_counter()
+    window.request_compare_stop_play.emit()
+    window.compare_worker.frames_ready.disconnect(on_playback_frame)
+
+    actual_elapsed_wall = t_play_end - t_play_start
+    final_rel_frame = window.compare_view._displayed_rel_frame
+    video_time_elapsed = final_rel_frame / 60.0
+
+    cadence_ratio = video_time_elapsed / actual_elapsed_wall if actual_elapsed_wall > 0 else 0
+    frames_rendered = len(rendered_frames)
+    effective_display_fps = frames_rendered / actual_elapsed_wall if actual_elapsed_wall > 0 else 0
+
+    print("Compare Playback Cadence Results (Dual 2560x1440 @ 60 FPS):", flush=True)
+    print(f"  Wall-clock time elapsed:  {actual_elapsed_wall:.3f}s", flush=True)
+    print(f"  Video frames advanced:    {final_rel_frame} frames ({video_time_elapsed:.3f}s)", flush=True)
+    print(f"  Speed ratio vs real-time: {cadence_ratio:.2f}x (1.00x is real-time)", flush=True)
+    print(f"  Unique frame renders:     {frames_rendered} frames ({effective_display_fps:.1f} display FPS)", flush=True)
+
+    # Invariant: Playback must not silently run in severe slow-motion
+    assert cadence_ratio >= 0.80, f"Playback was too slow: {cadence_ratio:.2f}x real-time"
+    print("Compare playback cadence verified within real-time tolerances!")
+
     # Return to editor
     window.exit_compare_mode()
     assert window.stacked_widget.currentIndex() == 0
