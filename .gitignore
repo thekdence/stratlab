@@ -13,3 +13,4 @@ build/
 !test_assets/*.mp4
 .vscode/
 .idea/
+test_assets/
